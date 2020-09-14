@@ -117,6 +117,7 @@ struct ast_expr {
 	enum ast_expr_type type;
 	enum ast_flags flags;
 	enum re_flags re_flags;
+	struct ast_expr *next;
 
 	union {
 		/* ordered sequence */

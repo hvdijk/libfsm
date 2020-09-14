@@ -119,6 +119,8 @@
 		struct re_pos groupstart; struct re_pos groupend;
 		struct re_pos rangestart; struct re_pos rangeend;
 		struct re_pos countstart; struct re_pos countend;
+
+		struct ast_expr *curnode;
 	};
 
 	struct lex_state {
@@ -134,6 +136,7 @@
 	};
 
 	#define CURRENT_TERMINAL (act_state->lex_tok)
+	#define CURRENT_NODE     (act_state->curnode)
 	#define ERROR_TERMINAL   @$ERROR
 	#define ADVANCE_LEXER    do { mark(&act_state->synstart, &lex_state->lx.start); \
 	                              mark(&act_state->synend,   &lex_state->lx.end);   \
@@ -658,6 +661,8 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-make-concat>: () -> (node :ast_expr) = @{
@@ -665,6 +670,8 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-make-alt>: () -> (node :ast_expr) = @{
@@ -672,6 +679,8 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-make-literal>: (c :char) -> (node :ast_expr) = @{
@@ -679,6 +688,8 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<make-literal-cbrak>: () -> (c :char) = @{
@@ -686,24 +697,36 @@
 	@};
 
 	<ast-make-piece>: (e :ast_expr, c :ast_count) -> (node :ast_expr) = @{
+		struct ast_expr *rep;
+
+		assert(CURRENT_NODE == @e);
 		if (@c.min == 0 && @c.max == 0) {
-			@node = ast_make_expr_empty(*flags);
+			rep = ast_make_expr_empty(*flags);
 		} else if (@c.min == 1 && @c.max == 1) {
-			@node = @e;
+			rep = @e;
 		} else {
-			@node = ast_make_expr_repeat(*flags, @e, @c);
+			rep = ast_make_expr_repeat(*flags, @e, @c);
 		}
-		if (@node == NULL) {
+		if (rep == NULL) {
 			err->e = RE_EXEOF;
 			@!;
 		}
+		if (rep != @e) {
+			rep->next = CURRENT_NODE->next;
+		}
+		CURRENT_NODE = @node = rep;
 	@};
 
 	<ast-make-group>: (e :ast_expr) -> (node :ast_expr) = @{
-		@node = ast_make_expr_group(*flags, @e);
-		if (@node == NULL) {
+		struct ast_expr *grp;
+
+		assert(CURRENT_NODE == @e);
+		grp = ast_make_expr_group(*flags, @e);
+		if (grp == NULL) {
 			@!;
 		}
+		grp->next = @e->next;
+		CURRENT_NODE = @node = grp;
 	@};
 
 	<ast-get-re-flags>: () -> (flags :re_flags) = @{
@@ -728,6 +751,8 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-make-anchor-end>: () -> (node :ast_expr) = @{
@@ -735,17 +760,28 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-make-subtract>: (a :ast_expr, b :ast_expr) -> (node :ast_expr) = @{
-		@node = ast_make_expr_subtract(*flags, @a, @b);
-		if (@node == NULL) {
+		struct ast_expr *sub;
+
+		assert(CURRENT_NODE == @b);
+		assert(CURRENT_NODE->next == @a);
+		sub = ast_make_expr_subtract(*flags, @a, @b);
+		if (sub == NULL) {
 			@!;
 		}
+		sub->next = @a->next;
+		CURRENT_NODE = @node = sub;
 	@};
 
 	<ast-make-invert>: (e :ast_expr) -> (node :ast_expr) = @{
 		struct ast_expr *any;
+		struct ast_expr *sub;
+
+		assert(CURRENT_NODE == @e);
 
 		/*
 		 * Here we're using an AST_EXPR_SUBTRACT node to implement inversion.
@@ -776,10 +812,15 @@
 			@!;
 		}
 
-		@node = ast_make_expr_subtract(*flags, any, @e);
-		if (@node == NULL) {
+		sub = ast_make_expr_subtract(*flags, any, @e);
+		if (sub == NULL) {
+			ast_expr_free(any);
 			@!;
 		}
+
+		sub->next = @e->next;
+
+		CURRENT_NODE = @node = sub;
 	@};
 
 	<ast-make-range>: (from :endpoint, start :pos, to :endpoint, end :pos) -> (node :ast_expr) = @{
@@ -813,6 +854,8 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-make-named>: (id :ast_class_id) -> (node :ast_expr) = @{
@@ -820,17 +863,33 @@
 		if (@node == NULL) {
 			@!;
 		}
+		@node->next = CURRENT_NODE;
+		CURRENT_NODE = @node;
 	@};
 
 	<ast-add-concat>: (cat :ast_expr, node :ast_expr) -> () = @{
+		assert(CURRENT_NODE == @node
+		    || CURRENT_NODE == @cat && @cat->next == @node);
 		if (!ast_add_expr_concat(@cat, @node)) {
 			@!;
+		}
+		if (CURRENT_NODE == @node) {
+			CURRENT_NODE = CURRENT_NODE->next;
+		} else {
+			@cat->next = @node->next;
 		}
 	@};
 
 	<ast-add-alt>: (alt :ast_expr, node :ast_expr) -> () = @{
+		assert(CURRENT_NODE == @node
+		    || CURRENT_NODE == @alt && @alt->next == @node);
 		if (!ast_add_expr_alt(@alt, @node)) {
 			@!;
+		}
+		if (CURRENT_NODE == @node) {
+			CURRENT_NODE = CURRENT_NODE->next;
+		} else {
+			@alt->next = @node->next;
 		}
 	@};
 
@@ -905,13 +964,22 @@
 
 		err->e = RE_ESUCCESS;
 
+		CURRENT_NODE = NULL;
+
 		ADVANCE_LEXER;
 		DIALECT_ENTRY(&flags, lex_state, act_state, err, &ast->expr);
 
 		lx->free(lx->buf_opaque);
 
 		if (err->e != RE_ESUCCESS) {
-			/* TODO: free internals allocated during parsing (are there any?) */
+			struct ast_expr *e;
+
+			assert(ast->expr == NULL);
+			while (CURRENT_NODE != NULL) {
+				e = CURRENT_NODE->next;
+				ast_expr_free(CURRENT_NODE);
+				CURRENT_NODE = e;
+			}
 			goto error;
 		}
 
